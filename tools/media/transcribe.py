@@ -7,16 +7,18 @@ Pipeline:
   1. Validate ffmpeg is on PATH.
   2. Convert input to a 16 kHz mono WAV (skipped if input is already .wav).
   3. Transcribe with local Whisper using word-level timestamps.
-  4. Output: print formatted transcript to terminal, write .txt, or export raw JSON.
+  4. Output: print formatted transcript to terminal, write .txt/.md, or export raw JSON.
 
 Output formats:
   (omit)  Print timestamped transcript to the terminal.
   txt     Write a plain-text transcript to <input>.txt.
+  md      Write a Markdown transcript to <input>.md  ([MM:SS] / [HH:MM:SS] per sentence).
   raw     Write the full Whisper result dict to <input>.json.
 """
 
 import json
 import os
+import re
 import tempfile
 from enum import Enum
 from pathlib import Path
@@ -43,6 +45,74 @@ class OutputFormat(str, Enum):
 
     raw = "raw"
     txt = "txt"
+    md = "md"
+
+
+def _format_timestamp_md(seconds: float) -> str:
+    """Format seconds as [MM:SS] or [HH:MM:SS] when the value exceeds one hour.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Bracketed timestamp string, e.g. "[01:05]" or "[01:02:03]".
+    """
+    total_s = int(seconds)
+    h, remainder = divmod(total_s, 3600)
+    m, s = divmod(remainder, 60)
+    if h:
+        return f"[{h:02d}:{m:02d}:{s:02d}]"
+    return f"[{m:02d}:{s:02d}]"
+
+
+def _format_transcript_md(result: dict) -> str:
+    """Format a Whisper result dict into a Markdown transcript.
+
+    Produces one sentence per line prefixed with a bracketed timestamp,
+    matching the output format of `tools media srt-to-md`.
+
+    Args:
+        result: Whisper result dict as returned by transcribe().
+
+    Returns:
+        String with lines like "[MM:SS] sentence text", or "" if no words found.
+    """
+    if not result:
+        return ""
+
+    all_words = [
+        word
+        for seg in result.get("segments", [])
+        for word in seg.get("words", [])
+    ]
+    if not all_words:
+        return result.get("text", "").strip()
+
+    SENT_END = set(".?!")
+    lines: list[str] = []
+    sentence_words: list[str] = []
+    sentence_start: float | None = None
+
+    for w in all_words:
+        text = w["word"]
+        if sentence_start is None:
+            sentence_start = w["start"]
+        sentence_words.append(text.strip())
+        if text.rstrip() and text.rstrip()[-1] in SENT_END:
+            ts = _format_timestamp_md(sentence_start)
+            # Re-use the spacing-fix from shared/whisper.py inline to avoid coupling
+            sentence_text = re.sub(r"(\w) (['''])(\w)", r"\1\2\3", " ".join(sentence_words))
+            lines.append(f"{ts} {sentence_text}")
+            sentence_words = []
+            sentence_start = None
+
+    # Flush any trailing words that didn't end with terminal punctuation
+    if sentence_words:
+        ts = _format_timestamp_md(sentence_start)  # type: ignore[arg-type]
+        sentence_text = re.sub(r"(\w) (['''])(\w)", r"\1\2\3", " ".join(sentence_words))
+        lines.append(f"{ts} {sentence_text}")
+
+    return "\n".join(lines)
 
 
 def _validate_model(value: str) -> str:
@@ -81,7 +151,7 @@ def transcribe_cmd(
     output_format: Annotated[
         Optional[OutputFormat],
         typer.Option(
-            help="Export format: 'txt' (plain text file) or 'raw' (JSON). Omit to print to terminal.",
+            help="Export format: 'txt' (plain text), 'md' (Markdown with [MM:SS] timestamps), or 'raw' (JSON). Omit to print to terminal.",
         ),
     ] = None,
 ) -> None:
@@ -121,6 +191,10 @@ def transcribe_cmd(
             output_path = input_path.with_suffix(".txt")
             output_path.write_text(format_transcript(result, plain=True), encoding="utf-8")
             console.print(f"[green]Transcript exported →[/green] {output_path}")
+        elif output_format == OutputFormat.md:
+            output_path = input_path.with_suffix(".md")
+            output_path.write_text(_format_transcript_md(result), encoding="utf-8")
+            console.print(f"[green]Markdown written →[/green] {output_path}")
         else:
             console.print()
             console.print(format_transcript(result))
