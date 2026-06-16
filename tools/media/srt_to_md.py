@@ -8,8 +8,8 @@ Responsibilities:
   - Write a .md file beside the source SRT
 
 Output format (one sentence per line):
-  [0:00] Hey, my name is Clement!
-  [0:05] I'm 22 and I love tennis.
+  [00:00] Hey, my name is Clement!
+  [00:05] I'm 22 and I love tennis.
 """
 
 import re
@@ -47,11 +47,11 @@ def format_timestamp(seconds: float) -> str:
         seconds: Duration in seconds.
 
     Returns:
-        String like "[0:05]" or "[1:23]".
+        String like "[00:05]" or "[01:23]".
     """
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
-    return f"[{minutes}:{secs:02d}]"
+    return f"[{minutes:02d}:{secs:02d}]"
 
 
 def strip_tags(text: str) -> str:
@@ -158,8 +158,8 @@ def srt_to_md(
     Each sentence is placed on its own line, prefixed by the start-time of
     its first subtitle block:
 
-      [0:00] Hey, my name is Clement!
-      [0:05] I'm 22 and I love tennis.
+      [00:00] Hey, my name is Clement!
+      [00:05] I'm 22 and I love tennis.
 
     The output file is written alongside the source with a .md extension.
 

@@ -15,6 +15,10 @@ A personal CLI toolkit built with [Typer](https://typer.tiangolo.com/) and manag
 ## Installation
 
 ```bash
+# Clone the repo
+git clone https://github.com/<your-username>/bash-tools.git
+cd bash-tools
+
 # Run without installing (development)
 uv run tools --help
 
@@ -142,6 +146,97 @@ tools media audio-to-srt interview.mp4 --min-gap 0.15
 ```
 
 **Output:** `<input>.srt` in the same directory as the input file.
+
+---
+
+#### `tools media transcribe`
+
+Transcribes an audio or video file locally using Whisper and prints a timestamped transcript to the terminal, or exports it as plain text, Markdown, or raw JSON.
+
+**Pipeline:**
+1. Validate ffmpeg is on `PATH`.
+2. Convert input to a 16 kHz mono WAV (skipped if already `.wav`).
+3. Transcribe with local Whisper using word-level timestamps.
+4. Print to the terminal, or write `.txt` / `.md` / `.json` depending on `--output-format`.
+
+**Usage:**
+```bash
+tools media transcribe <input_file> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `INPUT_FILE` | Path to any audio or video file (MP3, MP4, MOV, WAV, M4A, AAC, MKV). |
+
+**Options:**
+
+| Option | Default | Description |
+|---|---|---|
+| `--model` | `turbo` | Whisper model size: `tiny`, `base`, `small`, `medium`, `large`, `turbo`. |
+| `--output-format` | _(none)_ | `txt` (plain text), `md` (Markdown with `[MM:SS]` timestamps), or `raw` (full Whisper result as JSON). Omit to print to the terminal. |
+
+**Examples:**
+```bash
+# Print a timestamped transcript to the terminal
+tools media transcribe interview.mp4
+
+# Export a plain-text transcript
+tools media transcribe lecture.mp4 --output-format txt
+
+# Export a Markdown transcript with timestamps
+tools media transcribe podcast.mp3 --output-format md
+
+# Export the raw Whisper result for downstream processing
+tools media transcribe clip.mov --output-format raw
+```
+
+**Output:** Printed to the terminal, or `<input>.txt` / `<input>.md` / `<input>.json` depending on `--output-format`.
+
+---
+
+#### `tools media srt-to-md`
+
+Converts an SRT subtitle file into a timestamped Markdown transcript. Merges word-level or fragment-level SRT blocks into full sentences, stamping each with the start time of its first contributing block.
+
+**Pipeline:**
+1. Parse SRT blocks (strips HTML-like tags such as `<b>`).
+2. Merge consecutive blocks into sentences, ending on `.`, `!`, or `?`.
+3. Write one sentence per line, prefixed with its start timestamp.
+4. Write `<input>.md`.
+
+**Usage:**
+```bash
+tools media srt-to-md <input_file>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `INPUT_FILE` | Path to an existing `.srt` file. |
+
+**Example:**
+```bash
+tools media srt-to-md interview.srt
+```
+
+**Output format** (one sentence per line):
+```
+[00:00] Hey, my name is Clement!
+[00:05] I'm 22 and I love tennis.
+```
+
+**Output:** `<input>.md` in the same directory as the input file.
+
+---
+
+## Raycast integration
+
+[`raycast/srt-to-md.sh`](raycast/srt-to-md.sh) wraps `tools media srt-to-md` as a Raycast script command. Select a `.srt` file in Finder, run the "SRT to MD" command from Raycast, and it converts the selected file in place.
+
+To use it, add the `raycast/` directory as a script directory in Raycast's preferences (Extensions → Script Commands). The script extends `PATH` to include `~/.local/bin` (where `uv tool install` places binaries) and `/opt/homebrew/bin` (Homebrew's ffmpeg), since Raycast runs scripts with a minimal environment.
 
 ---
 
