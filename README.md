@@ -1,7 +1,8 @@
 # tools
 
-<img width="748" height="161" alt="image" src="https://github.com/user-attachments/assets/02ed521d-001b-421a-a176-9330cccb5df3" />
-
+<p align="center">
+  <img width="748" height="161" alt="image" src="https://github.com/user-attachments/assets/02ed521d-001b-421a-a176-9330cccb5df3" />
+</p>
 
 A personal CLI toolkit built with [Typer](https://typer.tiangolo.com/) and managed by [uv](https://docs.astral.sh/uv/). Commands are organised into groups (e.g. `media`). Each group can be extended independently without touching others.
 
