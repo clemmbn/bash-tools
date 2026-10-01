@@ -5,9 +5,17 @@ Converts a raw MP4/MOV video to a CMX 3600 EDL file using ffmpeg silence detecti
 
 Pipeline:
   1. Extract audio to a temp WAV (16 kHz mono) via ffmpeg.
-  2. Detect silence intervals with ffmpeg silencedetect; derive speech intervals.
-  3. Build CMX 3600 EDL from padded speech intervals.
-  4. Write <input>.edl next to the input file; clean up the temp WAV.
+  2. Pick a silence threshold: either the user's --silence-threshold, or one derived
+     from this file's measured noise floor and voice level (so recordings made at
+     different voice levels get comparable cuts).
+  3. Detect silence intervals with ffmpeg silencedetect; derive speech intervals.
+  4. Build CMX 3600 EDL from padded speech intervals.
+  5. Write <input>.edl next to the input file; clean up the temp WAV.
+
+Non-obvious constraints:
+  - The audio itself is never boosted or normalized. An earlier attempt with
+    ffmpeg dynaudnorm amplified room noise during long pauses above the threshold,
+    so pauses stopped being cut. Moving the threshold instead avoids that.
 """
 
 import os
@@ -54,6 +62,122 @@ def seconds_to_timecode(seconds: float, fps: int) -> str:
 # ---------------------------------------------------------------------------
 # Silence detection and speech interval derivation
 # ---------------------------------------------------------------------------
+
+# Window size for loudness measurement: 4000 samples = 0.25 s at the 16 kHz WAV rate
+# produced by extract_audio(). Long enough to average out single clicks, short
+# enough to resolve the gaps between sentences.
+LEVEL_WINDOW_SAMPLES = 4000
+
+# Percentiles of the per-window RMS levels used as reference points.
+#   - 10th percentile ≈ room noise: every recording has pauses, so at least 10% of
+#     windows are silence even in dense speech.
+#   - 95th percentile ≈ voice level: robust as long as speech fills > 5% of the
+#     file, while ignoring the few loudest outliers (laughs, bumps).
+NOISE_PERCENTILE = 10
+SPEECH_PERCENTILE = 95
+
+# Where the threshold sits between noise floor (0.0) and voice level (1.0).
+# 0.8 reproduces the historical fixed -25 dB default on a reference recording
+# (noise -50.7 dB, voice -19.7 dB → -25.9 dB), so a "normal" take behaves as
+# before, while a quieter voice pulls the threshold down by a proportional amount.
+# A fraction (rather than "voice minus N dB") also keeps the threshold above the
+# noise floor automatically when the voice is quiet relative to the room.
+THRESHOLD_POSITION = 0.8
+
+# Below this noise→voice gap the two can't be reliably separated; we still compute
+# a threshold but warn the user to check the result or pass --silence-threshold.
+MIN_LEVEL_GAP_DB = 15.0
+
+
+def percentile(values: list[float], pct: float) -> float:
+    """Return the pct-th percentile of values (nearest-rank, no interpolation).
+
+    Args:
+        values: Non-empty list of numbers (order doesn't matter).
+        pct:    Percentile in [0, 100].
+
+    Returns:
+        The value at that rank in the sorted list.
+    """
+    ordered = sorted(values)
+    return ordered[round(pct / 100 * (len(ordered) - 1))]
+
+
+def measure_levels(wav_path: str) -> tuple[float, float]:
+    """Measure the noise floor and voice level of a WAV file in dBFS.
+
+    Splits the audio into LEVEL_WINDOW_SAMPLES windows, measures each window's RMS
+    level with ffmpeg astats, and takes the NOISE_PERCENTILE / SPEECH_PERCENTILE.
+
+    Args:
+        wav_path: Path to the 16 kHz mono WAV produced by extract_audio().
+
+    Returns:
+        (noise_db, speech_db) tuple.
+
+    Raises:
+        subprocess.CalledProcessError: if ffmpeg exits non-zero.
+        RuntimeError: if ffmpeg reports no usable level measurements.
+    """
+    console.print("[cyan]Measuring audio levels[/cyan] …")
+
+    # ametadata=print logs each window's RMS to stderr as
+    # "lavfi.astats.Overall.RMS_level=<dB>"; reset=1 makes astats per-window.
+    result = subprocess.run(
+        [
+            "ffmpeg", "-i", wav_path,
+            "-af", (
+                f"asetnsamples={LEVEL_WINDOW_SAMPLES},"
+                "astats=metadata=1:reset=1,"
+                "ametadata=print:key=lavfi.astats.Overall.RMS_level"
+            ),
+            "-f", "null", "-",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+
+    # "-inf" windows are digital silence (e.g. muted segments). Skipping them keeps
+    # them from dragging the noise floor to -inf and the threshold with it.
+    levels = [
+        float(v)
+        for v in re.findall(r"RMS_level=(-?[\d.]+)", result.stderr)
+    ]
+    if not levels:
+        raise RuntimeError("Could not measure audio levels (no astats output from ffmpeg).")
+
+    noise_db = percentile(levels, NOISE_PERCENTILE)
+    speech_db = percentile(levels, SPEECH_PERCENTILE)
+    console.print(
+        f"[green]Levels measured[/green] over {len(levels)} window(s): "
+        f"noise floor {noise_db:.1f} dB, voice {speech_db:.1f} dB"
+    )
+    return noise_db, speech_db
+
+
+def auto_silence_threshold(noise_db: float, speech_db: float) -> float:
+    """Derive a silence threshold from the measured noise floor and voice level.
+
+    Args:
+        noise_db:  Noise floor in dBFS (from measure_levels()).
+        speech_db: Voice level in dBFS (from measure_levels()).
+
+    Returns:
+        Threshold in dBFS, THRESHOLD_POSITION of the way from noise to voice.
+
+    Side effects:
+        Prints a warning when the noise→voice gap is below MIN_LEVEL_GAP_DB.
+    """
+    gap = speech_db - noise_db
+    if gap < MIN_LEVEL_GAP_DB:
+        console.print(
+            f"[bold yellow]Warning:[/bold yellow] voice is only {gap:.1f} dB above the "
+            "noise floor; cuts may be unreliable. Consider passing --silence-threshold."
+        )
+    return round(noise_db + THRESHOLD_POSITION * gap, 1)
+
 
 def get_audio_duration(wav_path: str) -> float:
     """Return the duration of a WAV file in seconds using ffprobe.
@@ -242,7 +366,7 @@ def video_to_edl(
     input_video: Annotated[Path, typer.Argument(help="Input video file (.mp4 or .mov).")],
     fps: Annotated[int, typer.Option(help="Frame rate for EDL timecodes (frames per second).")] = 30,
     padding: Annotated[float, typer.Option(help="Seconds of padding added around each speech interval.")] = 0.05,
-    silence_threshold: Annotated[float, typer.Option(help="Silence detection threshold in dB (e.g. -25).")] = -25,
+    silence_threshold: Annotated[float | None, typer.Option(help="Silence detection threshold in dB (e.g. -25). Default: derived from the file's noise floor and voice level.")] = None,
     silence_duration: Annotated[float, typer.Option(help="Minimum silence duration in seconds to count as a cut point.")] = 0.2,
 ) -> None:
     """Convert a video file to a CMX 3600 EDL using ffmpeg silence detection."""
@@ -270,6 +394,16 @@ def video_to_edl(
         extract_audio(str(input_path), wav_path)
 
         audio_duration = get_audio_duration(wav_path)
+        console.print(f"[dim]Audio duration: {audio_duration:.2f}s[/dim]")
+
+        # An explicit --silence-threshold always wins; otherwise adapt to this file.
+        if silence_threshold is None:
+            noise_db, speech_db = measure_levels(wav_path)
+            silence_threshold = auto_silence_threshold(noise_db, speech_db)
+            console.print(f"[green]Auto silence threshold:[/green] {silence_threshold} dB")
+        else:
+            console.print(f"[dim]Using manual silence threshold: {silence_threshold} dB[/dim]")
+
         silences = detect_silences(wav_path, silence_threshold, silence_duration)
         speech_intervals = silences_to_speech_intervals(silences, audio_duration)
 

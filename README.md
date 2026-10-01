@@ -69,7 +69,7 @@ tools media video-to-edl <input_video> [OPTIONS]
 |---|---|---|
 | `--fps` | `30` | Frame rate used to compute timecodes in the EDL. |
 | `--padding` | `0.05` | Seconds of padding added before and after each speech interval. |
-| `--silence-threshold` | `-25` | Silence detection threshold in dB. Higher (e.g. `-20`) detects more silence; lower (e.g. `-35`) is more conservative. |
+| `--silence-threshold` | auto | Silence detection threshold in dB. By default it is derived from each file's measured noise floor and voice level, so videos recorded at different voice levels get the same cuts. Pass a value to override: higher (e.g. `-20`) detects more silence; lower (e.g. `-35`) is more conservative. |
 | `--silence-duration` | `0.2` | Minimum duration in seconds for a gap to be treated as silence. |
 
 **Examples:**
