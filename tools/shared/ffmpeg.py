@@ -49,6 +49,9 @@ def extract_audio(input_path: str, wav_path: str) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
+        # A failing ffprobe leaves stdout empty, which the check below already
+        # reports as "no audio stream" — so a non-zero exit is handled, not ignored.
+        check=False,
     )
     if not probe.stdout.strip():
         console.print(f"[bold red]Error:[/bold red] {input_path} has no audio stream.")

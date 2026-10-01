@@ -21,7 +21,6 @@ Non-obvious constraints:
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated
@@ -218,6 +217,9 @@ def detect_silences(
     Returns:
         List of (start, end) pairs in seconds. An open-ended silence at the tail
         is represented as (start, inf).
+
+    Raises:
+        subprocess.CalledProcessError: if ffmpeg exits non-zero.
     """
     console.print(
         f"[cyan]Detecting silences[/cyan] "
@@ -233,6 +235,9 @@ def detect_silences(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
+        # Fail loudly: without this, an ffmpeg error yields no silences and the
+        # whole video would silently be kept as one speech interval.
+        check=True,
     )
 
     silences: list[tuple[float, float]] = []

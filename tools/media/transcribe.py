@@ -22,7 +22,7 @@ import re
 import tempfile
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -149,7 +149,7 @@ def transcribe_cmd(
         ),
     ] = "turbo",
     output_format: Annotated[
-        Optional[OutputFormat],
+        OutputFormat | None,
         typer.Option(
             help="Export format: 'txt' (plain text), 'md' (Markdown with [MM:SS] timestamps), or 'raw' (JSON). Omit to print to terminal.",
         ),

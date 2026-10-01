@@ -18,4 +18,9 @@ import typer
 media_app = typer.Typer(help="Media processing tools.")
 
 # Side-effect imports: each module registers its command on media_app via @media_app.command().
-from tools.media import audio_to_srt, srt_to_md, transcribe, video_to_edl  # noqa: F401, E402
+from tools.media import (  # noqa: F401
+    audio_to_srt,
+    srt_to_md,
+    transcribe,
+    video_to_edl,
+)
