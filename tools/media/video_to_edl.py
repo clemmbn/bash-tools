@@ -26,13 +26,11 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
+from rich.markup import escape
 
 from tools.media import media_app
 from tools.shared.ffmpeg import check_ffmpeg, extract_audio
-
-console = Console()
-
+from tools.shared.log import detail, error, format_duration, header, step, summary, warn
 
 # ---------------------------------------------------------------------------
 # Timecode utility
@@ -118,8 +116,6 @@ def measure_levels(wav_path: str) -> tuple[float, float]:
         subprocess.CalledProcessError: if ffmpeg exits non-zero.
         RuntimeError: if ffmpeg reports no usable level measurements.
     """
-    console.print("[cyan]Measuring audio levels[/cyan] …")
-
     # ametadata=print logs each window's RMS to stderr as
     # "lavfi.astats.Overall.RMS_level=<dB>"; reset=1 makes astats per-window.
     result = subprocess.run(
@@ -147,13 +143,7 @@ def measure_levels(wav_path: str) -> tuple[float, float]:
     if not levels:
         raise RuntimeError("Could not measure audio levels (no astats output from ffmpeg).")
 
-    noise_db = percentile(levels, NOISE_PERCENTILE)
-    speech_db = percentile(levels, SPEECH_PERCENTILE)
-    console.print(
-        f"[green]Levels measured[/green] over {len(levels)} window(s): "
-        f"noise floor {noise_db:.1f} dB, voice {speech_db:.1f} dB"
-    )
-    return noise_db, speech_db
+    return percentile(levels, NOISE_PERCENTILE), percentile(levels, SPEECH_PERCENTILE)
 
 
 def auto_silence_threshold(noise_db: float, speech_db: float) -> float:
@@ -171,9 +161,9 @@ def auto_silence_threshold(noise_db: float, speech_db: float) -> float:
     """
     gap = speech_db - noise_db
     if gap < MIN_LEVEL_GAP_DB:
-        console.print(
-            f"[bold yellow]Warning:[/bold yellow] voice is only {gap:.1f} dB above the "
-            "noise floor; cuts may be unreliable. Consider passing --silence-threshold."
+        warn(
+            f"Voice is only {gap:.1f} dB above the noise floor; cuts may be unreliable.",
+            hint="Check the result, or pass --silence-threshold to set it manually.",
         )
     return round(noise_db + THRESHOLD_POSITION * gap, 1)
 
@@ -221,11 +211,6 @@ def detect_silences(
     Raises:
         subprocess.CalledProcessError: if ffmpeg exits non-zero.
     """
-    console.print(
-        f"[cyan]Detecting silences[/cyan] "
-        f"(threshold={threshold_db}dB, min_duration={min_duration}s) …"
-    )
-
     result = subprocess.run(
         [
             "ffmpeg", "-i", wav_path,
@@ -258,7 +243,6 @@ def detect_silences(
     if current_start is not None:
         silences.append((current_start, float("inf")))
 
-    console.print(f"[green]Silence detection complete.[/green] {len(silences)} silence interval(s) found.")
     return silences
 
 
@@ -377,12 +361,12 @@ def video_to_edl(
     """Convert a video file to a CMX 3600 EDL using ffmpeg silence detection."""
     input_path = input_video.resolve()
     if not input_path.exists():
-        console.print(f"[bold red]Error:[/bold red] File not found: {input_path}")
+        error(f"File not found: {escape(str(input_path))}")
         raise typer.Exit(1)
     if input_path.suffix.lower() not in (".mp4", ".mov"):
-        console.print(
-            f"[bold red]Error:[/bold red] Unsupported file type '{input_path.suffix}'. "
-            "Only .mp4 and .mov are supported."
+        error(
+            f"Unsupported file type '{escape(input_path.suffix)}'.",
+            hint="Only .mp4 and .mov are supported.",
         )
         raise typer.Exit(1)
 
@@ -391,52 +375,65 @@ def video_to_edl(
     edl_path = input_path.with_suffix(".edl")
     wav_path = tempfile.mktemp(suffix=".wav", prefix="tools_video_to_edl_")
 
-    console.rule(f"[bold]video-to-edl — {input_path.name}[/bold]")
-
-    speech_intervals: list[tuple[float, float]] = []
+    header("video-to-edl", input_path.name)
 
     try:
         extract_audio(str(input_path), wav_path)
 
-        audio_duration = get_audio_duration(wav_path)
-        console.print(f"[dim]Audio duration: {audio_duration:.2f}s[/dim]")
-
         # An explicit --silence-threshold always wins; otherwise adapt to this file.
+        with step("Analyse audio levels") as s:
+            audio_duration = get_audio_duration(wav_path)
+            if silence_threshold is None:
+                noise_db, speech_db = measure_levels(wav_path)
+                s.detail(f"noise floor {noise_db:.1f} dB · voice {speech_db:.1f} dB · duration {format_duration(audio_duration)}")
+            else:
+                s.detail(f"duration {format_duration(audio_duration)}")
+
+        # Computed outside the step so a low-gap warning prints after its ✓ line.
         if silence_threshold is None:
-            noise_db, speech_db = measure_levels(wav_path)
             silence_threshold = auto_silence_threshold(noise_db, speech_db)
-            console.print(f"[green]Auto silence threshold:[/green] {silence_threshold} dB")
+            detail(f"silence threshold {silence_threshold} dB (auto)")
         else:
-            console.print(f"[dim]Using manual silence threshold: {silence_threshold} dB[/dim]")
+            detail(f"silence threshold {silence_threshold} dB (manual)")
 
-        silences = detect_silences(wav_path, silence_threshold, silence_duration)
-        speech_intervals = silences_to_speech_intervals(silences, audio_duration)
-
-        if not speech_intervals:
-            console.print(
-                "[bold yellow]Warning:[/bold yellow] No speech intervals detected. "
-                "Try lowering --silence-threshold. Exiting."
-            )
-            raise typer.Exit(0)
-
-        # Drop intervals shorter than 5 frames — they produce unusable EDL entries.
-        min_duration_secs = 5 / fps
-        speech_intervals = [iv for iv in speech_intervals if (iv[1] - iv[0]) >= min_duration_secs]
+        with step("Detect silences") as s:
+            silences = detect_silences(wav_path, silence_threshold, silence_duration)
+            speech_intervals = silences_to_speech_intervals(silences, audio_duration)
+            s.result = f"{len(silences)} silence(s), {len(speech_intervals)} speech interval(s)"
+            s.detail(f"min silence {silence_duration}s")
 
         if not speech_intervals:
-            console.print("[bold yellow]Warning:[/bold yellow] All speech intervals are too short. Exiting.")
+            warn("No speech detected — no EDL written.", hint="Try a lower --silence-threshold.")
             raise typer.Exit(0)
 
-        edl_intervals = compute_edl_intervals(speech_intervals, padding)
-        edl_str = generate_edl(edl_intervals, input_path.stem, fps)
-        edl_path.write_text(edl_str, encoding="utf-8")
+        with step("Build EDL") as s:
+            # Drop intervals shorter than 5 frames — they produce unusable EDL entries.
+            min_duration_secs = 5 / fps
+            kept_intervals = [iv for iv in speech_intervals if (iv[1] - iv[0]) >= min_duration_secs]
+            dropped = len(speech_intervals) - len(kept_intervals)
+
+            if kept_intervals:
+                edl_intervals = compute_edl_intervals(kept_intervals, padding)
+                edl_path.write_text(generate_edl(edl_intervals, input_path.stem, fps), encoding="utf-8")
+                s.result = f"{len(edl_intervals)} clip(s)"
+            else:
+                s.result = "nothing to write"
+            s.detail(f"{fps} fps · {padding}s padding · {dropped} interval(s) under 5 frames dropped")
+
+        if not kept_intervals:
+            warn("All speech intervals are under 5 frames — no EDL written.")
+            raise typer.Exit(0)
 
     finally:
         if os.path.exists(wav_path):
             os.remove(wav_path)
-            console.print(f"[dim]Cleaned up temp file: {wav_path}[/dim]")
+            detail("temp audio removed")
 
-    console.rule("[bold green]Done[/bold green]")
-    console.print(f"  Intervals : [bold]{len(speech_intervals)}[/bold] speech interval(s)")
-    console.print(f"  EDL       : [bold cyan]{edl_path}[/bold cyan]")
-    console.print()
+    # rec_out of the last event = total duration of the edited timeline.
+    kept_secs = edl_intervals[-1][3]
+    summary({
+        "Clips": len(edl_intervals),
+        "Kept": f"{format_duration(kept_secs)} of {format_duration(audio_duration)} ({kept_secs / audio_duration:.0%})",
+        "Threshold": f"{silence_threshold} dB",
+        "EDL": edl_path,
+    })

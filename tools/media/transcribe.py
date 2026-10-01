@@ -25,13 +25,12 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
+from rich.markup import escape
 
 from tools.media import media_app
 from tools.shared.ffmpeg import check_ffmpeg, extract_audio
+from tools.shared.log import console, detail, error, header, step, summary, warn
 from tools.shared.whisper import format_transcript, transcribe
-
-console = Console()
 
 # Whisper model choices kept in sync with the Whisper API.
 _MODEL_CHOICES = ["tiny", "base", "small", "medium", "large", "turbo"]
@@ -130,11 +129,10 @@ def _export_json(result: dict, output_path: Path) -> None:
         output_path: Destination path for the JSON file.
 
     Side effects:
-        Writes output_path to disk and prints a confirmation message.
+        Writes output_path to disk.
     """
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
-    console.print(f"[green]Raw transcript exported →[/green] {output_path}")
 
 
 @media_app.command("transcribe")
@@ -160,20 +158,23 @@ def transcribe_cmd(
 
     input_path = input_file.resolve()
     if not input_path.exists():
-        console.print(f"[bold red]Error:[/bold red] File not found: {input_path}")
+        error(f"File not found: {escape(str(input_path))}")
         raise typer.Exit(1)
 
     if input_path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
-        console.print(
-            f"[bold red]Error:[/bold red] Unsupported file extension '{input_path.suffix}'.\n"
-            f"Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}"
+        error(
+            f"Unsupported file extension '{escape(input_path.suffix)}'.",
+            hint=f"Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}",
         )
         raise typer.Exit(1)
+
+    header("transcribe", input_path.name)
 
     tmp_wav: str | None = None
     try:
         if input_path.suffix.lower() == ".wav":
             wav_path = str(input_path)
+            detail("input is already a WAV — skipping audio extraction")
         else:
             fd, tmp_wav = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
@@ -182,23 +183,30 @@ def transcribe_cmd(
 
         result = transcribe(wav_path, model)
         if not result:
-            console.print("[yellow]No speech detected — nothing to export.[/yellow]")
+            warn("No speech detected — nothing to export.")
             return
 
-        if output_format == OutputFormat.raw:
-            _export_json(result, input_path.with_suffix(".json"))
-        elif output_format == OutputFormat.txt:
-            output_path = input_path.with_suffix(".txt")
-            output_path.write_text(format_transcript(result, plain=True), encoding="utf-8")
-            console.print(f"[green]Transcript exported →[/green] {output_path}")
-        elif output_format == OutputFormat.md:
-            output_path = input_path.with_suffix(".md")
-            output_path.write_text(_format_transcript_md(result), encoding="utf-8")
-            console.print(f"[green]Markdown written →[/green] {output_path}")
-        else:
-            console.print()
+        if output_format is None:
+            # Terminal mode: the transcript itself is the output, shown in its own
+            # section. format_transcript() already escapes the transcript text.
+            console.rule("[bold green]Transcript[/bold green]")
             console.print(format_transcript(result))
+            console.print()
+            return
+
+        # Each export format: (output extension, summary label, writer function).
+        exports = {
+            OutputFormat.raw: (".json", "JSON", lambda path: _export_json(result, path)),
+            OutputFormat.txt: (".txt", "Text", lambda path: path.write_text(format_transcript(result, plain=True), encoding="utf-8")),
+            OutputFormat.md: (".md", "Markdown", lambda path: path.write_text(_format_transcript_md(result), encoding="utf-8")),
+        }
+        suffix, label, write = exports[output_format]
+        output_path = input_path.with_suffix(suffix)
+        with step(f"Write {label}"):
+            write(output_path)
 
     finally:
         if tmp_wav:
             Path(tmp_wav).unlink(missing_ok=True)
+
+    summary({label: output_path})

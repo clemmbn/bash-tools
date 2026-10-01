@@ -17,11 +17,10 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
+from rich.markup import escape
 
 from tools.media import media_app
-
-console = Console()
+from tools.shared.log import error, header, step, summary
 
 
 def parse_srt_time(ts: str) -> float:
@@ -167,25 +166,29 @@ def srt_to_md(
         input_file: Path to an existing .srt file.
     """
     if not input_file.exists():
-        console.print(f"[red]Error:[/red] file not found: {input_file}")
+        error(f"File not found: {escape(str(input_file))}")
         raise typer.Exit(1)
 
     if input_file.suffix.lower() != ".srt":
-        console.print(f"[red]Error:[/red] expected a .srt file, got: {input_file.suffix}")
+        error(f"Expected a .srt file, got: '{escape(input_file.suffix)}'")
         raise typer.Exit(1)
 
-    content = input_file.read_text(encoding="utf-8")
-    blocks = parse_srt(content)
+    header("srt-to-md", input_file.name)
+
+    with step("Parse SRT") as s:
+        blocks = parse_srt(input_file.read_text(encoding="utf-8"))
+        s.result = f"{len(blocks)} subtitle block(s)"
 
     if not blocks:
-        console.print("[yellow]Warning:[/yellow] no subtitle blocks found in the file.")
+        # Exit 1 (not a warning) so Raycast / scripts see that nothing was written.
+        error("No subtitle blocks found in the file — nothing written.")
         raise typer.Exit(1)
 
-    sentences = build_sentences(blocks)
-    lines = [f"{format_timestamp(ts)} {text}" for ts, text in sentences]
-    output = "\n".join(lines)
-
     output_path = input_file.with_suffix(".md")
-    output_path.write_text(output, encoding="utf-8")
+    with step("Write Markdown") as s:
+        sentences = build_sentences(blocks)
+        lines = [f"{format_timestamp(ts)} {text}" for ts, text in sentences]
+        output_path.write_text("\n".join(lines), encoding="utf-8")
+        s.result = f"{len(sentences)} sentence(s)"
 
-    console.print(f"[green]Markdown written →[/green] {output_path}")
+    summary({"Sentences": len(sentences), "Markdown": output_path})

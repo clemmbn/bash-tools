@@ -16,13 +16,12 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
+from rich.markup import escape
 
 from tools.media import media_app
 from tools.shared.ffmpeg import check_ffmpeg, extract_audio
+from tools.shared.log import detail, error, header, step, summary, warn
 from tools.shared.whisper import transcribe
-
-console = Console()
 
 # Whisper model choices kept in sync with the Whisper API.
 _MODEL_CHOICES = ["tiny", "base", "small", "medium", "large", "turbo"]
@@ -124,7 +123,7 @@ def write_srt(
     silence_threshold: float,
     max_lines: int,
     min_gap: float,
-) -> None:
+) -> int:
     """Group Whisper word timestamps into caption blocks and write an SRT file.
 
     A *line* is a list of word-dicts appearing on one subtitle row.
@@ -148,6 +147,12 @@ def write_srt(
         max_lines:         Maximum number of rows per caption block.
         min_gap:           Minimum gap in seconds allowed between two blocks;
                            shorter gaps are filled by splitting at the midpoint.
+
+    Returns:
+        Number of caption blocks written.
+
+    Side effects:
+        Writes the .srt file to output_path.
     """
     SENTENCE_PUNCT = {'.', '!', '?'}
     BREAK_PUNCT = {',', ';', '.', '!', '?'}
@@ -235,7 +240,7 @@ def write_srt(
         srt_lines.append("")
 
     Path(output_path).write_text("\n".join(srt_lines), encoding="utf-8")
-    console.print(f"[green]SRT written →[/green] {output_path}")
+    return len(blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +268,10 @@ def audio_to_srt(
 
     input_path = input_file.resolve()
     if not input_path.exists():
-        console.print(f"[bold red]Error:[/bold red] File not found: {input_path}")
+        error(f"File not found: {escape(str(input_path))}")
         raise typer.Exit(1)
+
+    header("audio-to-srt", input_path.name)
 
     output_path = input_path.with_suffix(".srt")
     suffix = input_path.suffix.lower()
@@ -273,6 +280,7 @@ def audio_to_srt(
     try:
         if suffix == ".wav":
             wav_path = str(input_path)
+            detail("input is already a WAV — skipping audio extraction")
         else:
             fd, tmp_wav = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
@@ -281,11 +289,19 @@ def audio_to_srt(
 
         result = transcribe(wav_path, model)
         if not result:
-            console.print("[yellow]No speech detected — no SRT file written.[/yellow]")
+            warn("No speech detected — no SRT file written.")
             return
 
-        write_srt(result, str(output_path), max_line_width, silence_threshold, max_lines, min_gap)
+        with step("Write SRT") as s:
+            block_count = write_srt(result, str(output_path), max_line_width, silence_threshold, max_lines, min_gap)
+            s.result = f"{block_count} caption block(s)"
+            s.detail(
+                f"max {max_line_width} chars × {max_lines} line(s), "
+                f"new block after {silence_threshold}s silence, min gap {min_gap}s"
+            )
 
     finally:
         if tmp_wav:
             Path(tmp_wav).unlink(missing_ok=True)
+
+    summary({"Captions": block_count, "SRT": output_path})

@@ -11,6 +11,7 @@ tools/                   Python package (maps to the `tools` CLI command)
 ├── main.py              Root Typer app — registers group sub-apps
 ├── shared/
 │   ├── ffmpeg.py        check_ffmpeg(), extract_audio() — shared by media tools
+│   ├── log.py           Shared Rich console + header/step/detail/warn/error/summary
 │   └── whisper.py       transcribe(), format_transcript() — shared by audio-to-srt
 └── media/
     ├── __init__.py      media_app = typer.Typer(); registers sub-commands via imports
@@ -76,3 +77,4 @@ uv add <package>
 
 - **`tools/shared/ffmpeg.py`** — `check_ffmpeg()` and `extract_audio()`. Import these instead of calling ffmpeg inline.
 - **`tools/shared/whisper.py`** — `transcribe()` and `format_transcript()`. Import these in any tool that needs Whisper.
+- **`tools/shared/log.py`** — all terminal output goes through it; never create a new `Console()`. A command calls `header()` once, wraps each phase in `with step("Do thing") as s:` (spinner + timer, then `✓ Do thing · s.result`; `s.detail()` adds dim lines under it), uses `warn()` / `error()` with an optional `hint=`, and ends with `summary({...})`. Escape user-supplied text (`rich.markup.escape`) before embedding it in a message. Output must stay readable with `NO_COLOR=1` (Raycast), so convey meaning with symbols/words, not color alone.
