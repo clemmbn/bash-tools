@@ -50,7 +50,7 @@ uv run tools --help
 ## Commands at a glance
 
 | Command | What it does | Input → output |
-|---|---|---|---|
+|---|---|---|
 | [`normalize-audio`](#normalize-audio) | Evens out the voice, normalizes to -14 LUFS / -1 dBTP | video → **same file, overwritten** |
 | [`video-to-edl`](#video-to-edl) | Detects speech, writes cuts that remove silences | video → `.edl` |
 | [`audio-to-srt`](#audio-to-srt) | Transcribes locally into subtitles | audio/video → `.srt` |
