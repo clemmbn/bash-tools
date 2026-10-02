@@ -16,7 +16,9 @@ tools/                   Python package (maps to the `tools` CLI command)
 └── media/
     ├── __init__.py      media_app = typer.Typer(); registers sub-commands via imports
     ├── video_to_edl.py  `tools media video-to-edl`
+    ├── normalize_audio.py `tools media normalize-audio`
     └── audio_to_srt.py  `tools media audio-to-srt`
+tests/                   pytest suite (`uv run pytest`)
 ```
 
 ## Running the CLI
@@ -30,6 +32,13 @@ uv run tools media video-to-edl input.mp4
 # Install once for system-wide use
 uv pip install -e .
 tools --help
+```
+
+## Checks
+
+```bash
+uv run pytest -q      # tests (end-to-end ones need ffmpeg)
+uvx ruff check tools tests
 ```
 
 ## Adding a new tool to an existing group
